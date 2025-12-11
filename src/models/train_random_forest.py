@@ -1,0 +1,421 @@
+"""
+Random Forest model training for flight delay prediction.
+
+Primary model for the project with best overall performance.
+"""
+
+import logging
+from pathlib import Path
+
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml import Pipeline
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
+import yaml
+
+
+class RandomForestTrainer:
+    """Trains Random Forest model for flight delay prediction."""
+
+    def __init__(self, spark: SparkSession, config_path: str = "config/config.yaml"):
+        """
+        Initialize trainer.
+
+        Args:
+            spark: Active SparkSession
+            config_path: Path to configuration file
+        """
+        self.spark = spark
+        self.logger = logging.getLogger(__name__)
+
+        with open(config_path, "r") as f:
+            self.config = yaml.safe_load(f)
+
+        self.model_config = self.config.get("models", {}).get("random_forest", {})
+
+    def prepare_features(self, df: DataFrame, feature_cols: list) -> DataFrame:
+        """
+        Prepare feature vector for training.
+
+        Args:
+            df: Input DataFrame with engineered features
+            feature_cols: List of feature column names
+
+        Returns:
+            DataFrame with assembled features
+        """
+        self.logger.info(f"Preparing {len(feature_cols)} features")
+
+        # Filter to existing columns
+        existing_cols = [col for col in feature_cols if col in df.columns]
+
+        if len(existing_cols) < len(feature_cols):
+            missing = set(feature_cols) - set(existing_cols)
+            self.logger.warning(f"Missing columns: {missing}")
+
+        assembler = VectorAssembler(
+            inputCols=existing_cols, outputCol="features", handleInvalid="skip"
+        )
+
+        df = assembler.transform(df)
+        return df
+
+    def split_data(self, df: DataFrame) -> tuple:
+        """
+        Split data into train, validation, and test sets.
+
+        Args:
+            df: Input DataFrame
+
+        Returns:
+            Tuple of (train_df, val_df, test_df)
+        """
+        preprocessing_config = self.config.get("preprocessing", {})
+        train_ratio = preprocessing_config.get("train_ratio", 0.7)
+        val_ratio = preprocessing_config.get("validation_ratio", 0.15)
+        test_ratio = preprocessing_config.get("test_ratio", 0.15)
+        seed = preprocessing_config.get("random_seed", 42)
+
+        self.logger.info(f"Splitting data: train={train_ratio}, val={val_ratio}, test={test_ratio}")
+
+        # First split: train vs (val + test)
+        train_df, temp_df = df.randomSplit([train_ratio, val_ratio + test_ratio], seed=seed)
+
+        # Second split: val vs test
+        val_df, test_df = temp_df.randomSplit(
+            [val_ratio / (val_ratio + test_ratio), test_ratio / (val_ratio + test_ratio)],
+            seed=seed,
+        )
+
+        self.logger.info(f"Train set: {train_df.count():,} records")
+        self.logger.info(f"Validation set: {val_df.count():,} records")
+        self.logger.info(f"Test set: {test_df.count():,} records")
+
+        return train_df, val_df, test_df
+
+    def train_model(self, train_df: DataFrame, val_df: DataFrame = None) -> Pipeline:
+        """
+        Train Random Forest model.
+
+        Args:
+            train_df: Training DataFrame
+            val_df: Optional validation DataFrame for hyperparameter tuning
+
+        Returns:
+            Trained Pipeline model
+        """
+        self.logger.info("Training Random Forest model")
+
+        # Get model hyperparameters from config
+        num_trees = self.model_config.get("num_trees", 100)
+        max_depth = self.model_config.get("max_depth", 10)
+        max_bins = self.model_config.get("max_bins", 32)
+        min_instances = self.model_config.get("min_instances_per_node", 1)
+        subsample_rate = self.model_config.get("subsample_rate", 1.0)
+        feature_subset = self.model_config.get("feature_subset_strategy", "auto")
+        seed = self.model_config.get("seed", 42)
+
+        self.logger.info(f"Model configuration:")
+        self.logger.info(f"  Trees: {num_trees}")
+        self.logger.info(f"  Max depth: {max_depth}")
+        self.logger.info(f"  Max bins: {max_bins}")
+        self.logger.info(f"  Subsample rate: {subsample_rate}")
+
+        # Create Random Forest classifier
+        rf = RandomForestClassifier(
+            featuresCol="features",
+            labelCol="IS_DELAYED",
+            numTrees=num_trees,
+            maxDepth=max_depth,
+            maxBins=max_bins,
+            minInstancesPerNode=min_instances,
+            subsamplingRate=subsample_rate,
+            featureSubsetStrategy=feature_subset,
+            seed=seed,
+        )
+
+        # Create pipeline
+        pipeline = Pipeline(stages=[rf])
+
+        # Check if cross-validation is enabled
+        cv_config = self.config.get("models", {}).get("cross_validation", {})
+        if cv_config.get("enabled", False) and val_df is not None:
+            self.logger.info("Training with cross-validation (Warning: This may take a long time)")
+
+            # Parameter grid for tuning
+            param_grid = (
+                ParamGridBuilder()
+                .addGrid(rf.numTrees, [50, 100, 150])
+                .addGrid(rf.maxDepth, [5, 10, 15])
+                .addGrid(rf.maxBins, [32, 64])
+                .build()
+            )
+
+            # Evaluator
+            evaluator = BinaryClassificationEvaluator(
+                labelCol="IS_DELAYED", rawPredictionCol="rawPrediction", metricName="areaUnderROC"
+            )
+
+            # Cross validator
+            cv = CrossValidator(
+                estimator=pipeline,
+                estimatorParamMaps=param_grid,
+                evaluator=evaluator,
+                numFolds=cv_config.get("num_folds", 3),  # Reduced for RF
+                seed=seed,
+                parallelism=4,  # Parallel fold execution
+            )
+
+            # Fit model
+            model = cv.fit(train_df)
+            self.logger.info("Cross-validation completed")
+
+            # Get best model parameters
+            best_model = model.bestModel.stages[-1]
+            self.logger.info(f"Best parameters:")
+            self.logger.info(f"  Trees: {best_model.getNumTrees}")
+            self.logger.info(f"  Max depth: {best_model.getMaxDepth()}")
+
+        else:
+            # Simple training without cross-validation
+            self.logger.info("Training without cross-validation")
+            model = pipeline.fit(train_df)
+
+        self.logger.info("Model training completed")
+        return model
+
+    def get_feature_importance(self, model: Pipeline, feature_cols: list) -> dict:
+        """
+        Extract feature importance from trained Random Forest.
+
+        Args:
+            model: Trained model
+            feature_cols: List of feature column names
+
+        Returns:
+            Dictionary mapping feature names to importance scores
+        """
+        self.logger.info("Extracting feature importance")
+
+        # Get RF model from pipeline
+        rf_model = model.stages[-1]
+
+        # Get feature importances
+        importances = rf_model.featureImportances.toArray()
+
+        # Create feature importance dictionary
+        feature_importance = dict(zip(feature_cols, importances))
+
+        # Sort by importance
+        sorted_importance = sorted(
+            feature_importance.items(), key=lambda x: x[1], reverse=True
+        )
+
+        self.logger.info("Top 10 most important features:")
+        for i, (feature, importance) in enumerate(sorted_importance[:10], 1):
+            self.logger.info(f"  {i}. {feature}: {importance:.4f}")
+
+        return dict(sorted_importance)
+
+    def evaluate_model(self, model: Pipeline, test_df: DataFrame) -> dict:
+        """
+        Evaluate trained model on test data.
+
+        Args:
+            model: Trained model
+            test_df: Test DataFrame
+
+        Returns:
+            Dictionary with evaluation metrics
+        """
+        self.logger.info("Evaluating model on test data")
+
+        # Make predictions
+        predictions = model.transform(test_df)
+
+        # Binary classification metrics
+        try:
+            evaluator_roc = BinaryClassificationEvaluator(
+                labelCol="IS_DELAYED", rawPredictionCol="rawPrediction", metricName="areaUnderROC"
+            )
+            evaluator_pr = BinaryClassificationEvaluator(
+                labelCol="IS_DELAYED", rawPredictionCol="rawPrediction", metricName="areaUnderPR"
+            )
+            auc_roc = evaluator_roc.evaluate(predictions)
+            auc_pr = evaluator_pr.evaluate(predictions)
+        except Exception as e:
+            self.logger.warning(f"Could not calculate AUC metrics: {e}")
+            self.logger.info("Using fallback metrics (accuracy, precision, recall, F1)")
+            auc_roc = 0.0
+            auc_pr = 0.0
+
+        # Multiclass metrics
+        mc_evaluator_acc = MulticlassClassificationEvaluator(
+            labelCol="IS_DELAYED", predictionCol="prediction", metricName="accuracy"
+        )
+
+        mc_evaluator_f1 = MulticlassClassificationEvaluator(
+            labelCol="IS_DELAYED", predictionCol="prediction", metricName="f1"
+        )
+
+        accuracy = mc_evaluator_acc.evaluate(predictions)
+        f1_weighted = mc_evaluator_f1.evaluate(predictions)
+
+        # Confusion matrix metrics
+        tp = predictions.filter("prediction = 1 AND IS_DELAYED = 1").count()
+        fp = predictions.filter("prediction = 1 AND IS_DELAYED = 0").count()
+        tn = predictions.filter("prediction = 0 AND IS_DELAYED = 0").count()
+        fn = predictions.filter("prediction = 0 AND IS_DELAYED = 1").count()
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+        metrics = {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "f1_weighted": f1_weighted,
+            "auc_roc": auc_roc,
+            "auc_pr": auc_pr,
+            "true_positives": tp,
+            "false_positives": fp,
+            "true_negatives": tn,
+            "false_negatives": fn,
+            "total_predictions": tp + fp + tn + fn,
+        }
+
+        # Log metrics
+        self.logger.info("Evaluation Results:")
+        for metric_name, value in metrics.items():
+            if isinstance(value, float):
+                self.logger.info(f"  {metric_name}: {value:.4f}")
+            else:
+                self.logger.info(f"  {metric_name}: {value:,}")
+
+        return metrics
+
+
+def main():
+    """Main function for standalone execution."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Train Random Forest model")
+    parser.add_argument("--input", required=True, help="Input feature data path")
+    parser.add_argument("--output", required=True, help="Output path for trained model")
+    parser.add_argument("--config", default="config/config.yaml", help="Config file path")
+    parser.add_argument("--metrics-output", help="Output path for metrics JSON")
+    parser.add_argument("--importance-output", help="Output path for feature importance JSON")
+    parser.add_argument("--trees", type=int, help="Override number of trees")
+    parser.add_argument("--depth", type=int, help="Override max depth")
+
+    args = parser.parse_args()
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # Initialize Spark with optimizations for Random Forest
+    spark = (
+        SparkSession.builder.appName("RandomForestTraining")
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.shuffle.partitions", "200")
+        .config("spark.default.parallelism", "200")
+        .getOrCreate()
+    )
+
+    try:
+        # Load feature data
+        logging.info(f"Loading feature data from: {args.input}")
+        df = spark.read.parquet(args.input)
+
+        # Initialize trainer
+        trainer = RandomForestTrainer(spark, args.config)
+
+        # Override config with CLI arguments if provided
+        if args.trees:
+            trainer.model_config["num_trees"] = args.trees
+            logging.info(f"Overriding num_trees to: {args.trees}")
+
+        if args.depth:
+            trainer.model_config["max_depth"] = args.depth
+            logging.info(f"Overriding max_depth to: {args.depth}")
+
+        # Define feature columns (indexed categorical + numerical)
+        feature_cols = [
+            "CARRIER_INDEX",
+            "ORIGIN_INDEX",
+            "DEST_INDEX",
+            "DAY_OF_WEEK",
+            "MONTH",
+            "HOUR_OF_DAY",
+            "IS_WEEKEND",
+            "IS_HOLIDAY",
+            "TIME_OF_DAY_INDEX",
+            "SEASON_INDEX",
+            "DISTANCE_CATEGORY_INDEX",
+            "DISTANCE",
+            "CRS_ELAPSED_TIME",
+            "ROUTE_POPULARITY",
+            "CARRIER_AVG_DELAY",
+            "ORIGIN_AVG_DELAY",
+            "DEST_AVG_DELAY",
+        ]
+
+        # Prepare features
+        df = trainer.prepare_features(df, feature_cols)
+
+        # Split data
+        train_df, val_df, test_df = trainer.split_data(df)
+
+        # Train model
+        model = trainer.train_model(train_df, val_df)
+
+        # Get feature importance
+        importance = trainer.get_feature_importance(model, feature_cols)
+
+        # Evaluate model
+        metrics = trainer.evaluate_model(model, test_df)
+
+        # Save model
+        logging.info(f"Saving model to: {args.output}")
+        model.write().overwrite().save(args.output)
+
+        # Save metrics if output path provided
+        if args.metrics_output:
+            metrics_path = Path(args.metrics_output)
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(metrics_path, "w") as f:
+                json.dump(metrics, f, indent=2)
+
+            logging.info(f"Metrics saved to: {args.metrics_output}")
+
+        # Save feature importance if output path provided
+        if args.importance_output:
+            importance_path = Path(args.importance_output)
+            importance_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(importance_path, "w") as f:
+                json.dump(importance, f, indent=2)
+
+            logging.info(f"Feature importance saved to: {args.importance_output}")
+
+        logging.info("Random Forest training completed successfully")
+
+    except Exception as e:
+        logging.error(f"Error during training: {str(e)}", exc_info=True)
+        raise
+
+    finally:
+        spark.stop()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,213 @@
+# Flight Delay Prediction - Configuration File
+
+# Data Paths
+data:
+  raw_data_path: "data/raw/"
+  processed_data_path: "data/processed/"
+  parquet_data_path: "data/parquet/"
+  kaggle_dataset: "data/raw/kaggle_flights.csv"
+  dot_dataset: "data/raw/dot_flights.csv"
+
+# Output Paths
+output:
+  models_path: "output/models/"
+  visualizations_path: "output/visualizations/"
+  benchmarks_path: "output/benchmarks/"
+  logs_path: "output/logs/"
+
+# Spark Configuration
+spark:
+  app_name: "FlightDelayPrediction"
+  master: "local[*]"  # Change to "yarn" for cluster mode
+
+  # Memory Settings
+  driver_memory: "4g"
+  executor_memory: "8g"
+  executor_cores: 4
+  num_executors: 4
+
+  # Optimization Settings
+  shuffle_partitions: 200
+  default_parallelism: 200
+
+  # Cluster Settings (for ICDS deployment)
+  cluster:
+    master: "yarn"
+    deploy_mode: "cluster"
+    queue: "default"
+
+# Data Processing
+preprocessing:
+  # Missing value thresholds
+  missing_threshold: 0.3  # Drop columns with >30% missing values
+
+  # Target variable
+  delay_threshold_minutes: 15  # Flights delayed >15 min are classified as delayed
+
+  # Train/test split
+  train_ratio: 0.7
+  validation_ratio: 0.15
+  test_ratio: 0.15
+  random_seed: 42
+
+  # Sampling (for development)
+  sample_fraction: 1.0  # Use 1.0 for full dataset, <1.0 for sampling
+
+  # Categorical columns
+  categorical_features:
+    - "CARRIER"
+    - "ORIGIN"
+    - "DEST"
+    - "DAY_OF_WEEK"
+    - "MONTH"
+
+  # Numerical columns
+  numerical_features:
+    - "CRS_DEP_TIME"
+    - "CRS_ARR_TIME"
+    - "CRS_ELAPSED_TIME"
+    - "DISTANCE"
+
+  # Columns to drop
+  drop_columns:
+    - "YEAR"
+    - "FL_DATE"
+    - "TAIL_NUM"
+    - "CANCELLATION_CODE"
+
+# Feature Engineering
+features:
+  # Temporal features
+  create_hour_of_day: true
+  create_time_of_day_category: true  # Morning, Afternoon, Evening, Night
+  create_is_weekend: true
+  create_is_holiday: true
+  create_season: true
+
+  # Route features
+  create_route_popularity: true
+  create_airport_delay_stats: true
+  create_carrier_delay_stats: true
+
+  # Holidays (US Federal Holidays)
+  holidays:
+    - "New Year's Day"
+    - "Martin Luther King Jr. Day"
+    - "Presidents' Day"
+    - "Memorial Day"
+    - "Independence Day"
+    - "Labor Day"
+    - "Columbus Day"
+    - "Veterans Day"
+    - "Thanksgiving"
+    - "Christmas Day"
+
+# Model Training
+models:
+  # Logistic Regression
+  logistic_regression:
+    max_iter: 100
+    reg_param: 0.01
+    elastic_net_param: 0.0
+    family: "binomial"
+
+  # Decision Tree
+  decision_tree:
+    max_depth: 10
+    max_bins: 400  # Increased to handle 377 airports
+    min_instances_per_node: 1
+    impurity: "gini"
+
+  # Random Forest
+  random_forest:
+    num_trees: 100
+    max_depth: 10
+    max_bins: 400  # Increased to handle 377 airports
+    min_instances_per_node: 1
+    subsample_rate: 1.0
+    feature_subset_strategy: "auto"
+    seed: 42
+
+  # Class imbalance handling
+  class_weights:
+    enabled: true
+    balance_ratio: 2.0  # Weight for minority class
+
+  # Cross-validation
+  cross_validation:
+    enabled: false  # Set to true for CV (slower)
+    num_folds: 5
+
+# Evaluation
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "areaUnderROC"
+    - "areaUnderPR"
+
+  # Threshold tuning
+  threshold_tuning:
+    enabled: true
+    thresholds: [0.3, 0.4, 0.5, 0.6, 0.7]
+
+# Visualization
+visualization:
+  # Plot settings
+  figure_size: [12, 8]
+  dpi: 300
+  style: "seaborn-v0_8-darkgrid"
+
+  # Color schemes
+  colors:
+    primary: "#1f77b4"
+    secondary: "#ff7f0e"
+    delayed: "#d62728"
+    on_time: "#2ca02c"
+
+  # Charts to generate
+  charts:
+    - "delay_by_carrier"
+    - "delay_by_airport"
+    - "delay_by_month"
+    - "delay_by_day_of_week"
+    - "delay_by_hour"
+    - "feature_importance"
+    - "confusion_matrix"
+    - "roc_curve"
+    - "precision_recall_curve"
+
+# Performance Benchmarking
+benchmarking:
+  enabled: true
+
+  # Node configurations to test
+  node_configs:
+    - nodes: 1
+      cores: 4
+    - nodes: 2
+      cores: 4
+    - nodes: 4
+      cores: 4
+
+  # Dataset sizes to test
+  dataset_sizes:
+    - 100000
+    - 1000000
+    - 10000000
+
+  # Metrics to track
+  metrics:
+    - "training_time"
+    - "prediction_time"
+    - "memory_usage"
+    - "cpu_usage"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  console: true
+  file: true

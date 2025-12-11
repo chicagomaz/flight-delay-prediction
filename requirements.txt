@@ -1,0 +1,49 @@
+# Core PySpark and Big Data Processing
+pyspark==3.5.0
+py4j==0.10.9.7
+
+# Data Processing and Analysis
+pandas==2.1.4
+numpy==1.26.2
+pyarrow==14.0.1  # For Parquet support
+
+# Machine Learning
+scikit-learn==1.3.2
+imbalanced-learn==0.11.0  # For SMOTE and class imbalance handling
+
+# Visualization
+matplotlib==3.8.2
+seaborn==0.13.0
+plotly==5.18.0
+
+# Jupyter Notebook Support
+jupyter==1.0.0
+ipykernel==6.27.1
+notebook==7.0.6
+
+# Configuration and Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+click==8.1.7  # For CLI argument parsing
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-spark==0.6.0
+
+# Code Quality
+black==23.12.1
+flake8==6.1.0
+pylint==3.0.3
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==2.0.0
+
+# Performance Monitoring
+psutil==5.9.6
+memory-profiler==0.61.0
+
+# Date and Time Handling
+holidays==0.38  # For holiday feature engineering
+python-dateutil==2.8.2

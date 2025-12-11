@@ -1,0 +1,86 @@
+╔═══════════════════════════════════════════════════════════════╗
+║   Flight Delay Prediction - ROAR Collab Quick Start          ║
+╚═══════════════════════════════════════════════════════════════╝
+
+📋 STEP-BY-STEP GUIDE
+
+1️⃣  CONNECT TO ROAR COLLAB
+   ssh YOUR_PSU_ID@submit.aci.ics.psu.edu
+
+2️⃣  UPLOAD PROJECT (from your local machine)
+   cd /mnt/c/Users/chica/Projects/PERSONALPROJECTS
+   scp -r flight-delay-predictionv2 YOUR_PSU_ID@submit.aci.ics.psu.edu:~/
+
+3️⃣  SETUP ENVIRONMENT (on ROAR)
+   cd ~/flight-delay-predictionv2
+   ./setup_roar.sh
+
+4️⃣  SUBMIT JOB
+   # Full dataset (4 hours)
+   sbatch submit_training.slurm
+
+   # OR 10% sample for testing (30 min)
+   sbatch submit_training.slurm 0.1
+
+5️⃣  MONITOR JOB
+   squeue -u $USER
+   tail -f output/logs/slurm_*.out
+
+6️⃣  VIEW RESULTS
+   cat output/models/random_forest/metrics.json
+   ls output/visualizations/
+
+7️⃣  DOWNLOAD RESULTS (from local machine)
+   scp -r YOUR_PSU_ID@submit.aci.ics.psu.edu:~/flight-delay-predictionv2/output ./roar_results/
+
+───────────────────────────────────────────────────────────────
+
+🔧 USEFUL COMMANDS
+
+Check job status:     squeue -u $USER
+Cancel job:           scancel JOBID
+View job details:     scontrol show job JOBID
+Check disk usage:     du -sh ~/flight-delay-predictionv2
+View error log:       cat output/logs/slurm_*.err
+
+───────────────────────────────────────────────────────────────
+
+⚡ RESOURCE ALLOCATION
+
+Current settings (in submit_training.slurm):
+  • CPUs: 16 cores
+  • Memory: 64GB RAM
+  • Time limit: 4 hours
+  • Partition: open (free)
+
+───────────────────────────────────────────────────────────────
+
+📊 EXPECTED TIMING
+
+1% sample (313K records):   ~5 minutes
+10% sample (3.1M records):  ~30 minutes
+Full dataset (31.3M):       ~4 hours
+
+───────────────────────────────────────────────────────────────
+
+📁 OUTPUT LOCATIONS
+
+Models:         output/models/random_forest/metrics.json
+Visualizations: output/visualizations/*.png
+Training logs:  output/logs/training_*.log
+SLURM logs:     output/logs/slurm_*.out
+
+───────────────────────────────────────────────────────────────
+
+🆘 TROUBLESHOOTING
+
+Job not starting?  → sinfo -p open
+Out of memory?     → Edit submit_training.slurm: #SBATCH --mem=96GB
+Job timeout?       → Edit submit_training.slurm: #SBATCH --time=8:00:00
+Module errors?     → module avail python; module load python/3.11.5
+
+───────────────────────────────────────────────────────────────
+
+📖 FULL DOCUMENTATION: See ROAR_COLLAB_GUIDE.md
+
+╚═══════════════════════════════════════════════════════════════╝
